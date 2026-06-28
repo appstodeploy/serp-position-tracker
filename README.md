@@ -53,6 +53,34 @@ First sheet, with at least these columns (extra columns become extra placeholder
 
 A ready-made example is in [`sample_coins.xlsx`](./sample_coins.xlsx).
 
+## Privacy & access control
+Streamlit Community Cloud apps are reachable by URL, and **every page (including
+Reports) has its own URL** — so the whole app is gated, not just the home page.
+
+**Enable the password gate:**
+1. Pick a strong password.
+2. On Streamlit Cloud: **App → Settings → Secrets**, add:
+   ```toml
+   app_password = "your-strong-password"
+   ```
+   For local runs: copy `.streamlit/secrets.toml.example` → `.streamlit/secrets.toml`
+   (git-ignored), or set `APP_PASSWORD=... streamlit run app.py`.
+3. Redeploy. Visitors now hit a lock screen on **every** page; a “Log out” button
+   appears in the sidebar. If no password is set, the app shows a public-mode warning.
+
+**Other things that help privacy:**
+- **Secrets stay out of the repo** — `app_password` and any `SERPER_API_KEY` live in
+  Streamlit secrets / env, never in code. The Serper key is per-session (see above).
+- **Reports are app-only** — generated XLSX files live in the app's ephemeral
+  filesystem (git-ignored) and are reachable only through the gated UI, not as
+  public links.
+- **Don't share the app URL** publicly; treat it as a secret alongside the password.
+- For stronger control, use Streamlit's **private app** + viewer allowlist (paid),
+  put it behind **Cloudflare Access / a reverse proxy with auth**, or swap the
+  single password for per-user logins via `streamlit-authenticator`.
+- Rotate the password (and Serper key) periodically; anyone who had the old one
+  loses access on the next change.
+
 ## Report structure
 - **Summary** — run metadata + brand header/logo.
 - **Results (full)** — one row per SERP result (position, page, domain, title, URL, snippet, is-brand).

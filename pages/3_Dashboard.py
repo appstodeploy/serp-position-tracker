@@ -6,10 +6,12 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from core import config_store, secrets, serper, xlsx_writer
+from core import config_store, gate, secrets, serper, xlsx_writer
 from core.query_engine import generate_queries, read_coin_list
 
 st.set_page_config(page_title="Tracking Dashboard", page_icon="🚀", layout="wide")
+gate.require_auth()
+gate.logout_button()
 st.title("🚀 Tracking Dashboard")
 
 cfg = config_store.load_config()

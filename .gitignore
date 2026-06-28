@@ -10,3 +10,6 @@ data/templates.json
 data/runs_history.json
 outputs/*.xlsx
 assets/brand_logo.*
+
+# Local Streamlit secrets (never commit)
+.streamlit/secrets.toml

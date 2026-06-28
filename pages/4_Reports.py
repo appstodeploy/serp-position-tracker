@@ -6,9 +6,11 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from core import config_store
+from core import config_store, gate
 
 st.set_page_config(page_title="Reports", page_icon="📊", layout="wide")
+gate.require_auth()
+gate.logout_button()
 st.title("📊 Reports")
 st.caption("Historical tracking runs and downloadable XLSX reports.")
 

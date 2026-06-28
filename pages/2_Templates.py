@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core import config_store
+from core import config_store, gate
 from core.query_engine import extract_placeholders
 
 st.set_page_config(page_title="Template Manager", page_icon="📋", layout="wide")
+gate.require_auth()
+gate.logout_button()
 st.title("📋 Template Manager")
 st.caption("Build query patterns with `{column_name}` placeholders (case-sensitive, "
            "must match your coin-list headers).")

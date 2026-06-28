@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core import config_store, secrets, serper
+from core import config_store, gate, secrets, serper
 
 st.set_page_config(page_title="Global Config", page_icon="⚙️", layout="wide")
+gate.require_auth()
+gate.logout_button()
 st.title("⚙️ Global Config")
 st.caption("Brand setup, Serper API key and search parameters. "
            "Non-secret settings persist across sessions; your API key stays private to your session.")
