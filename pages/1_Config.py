@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core import config_store, secrets, serper
+from core import config_store, gate, secrets, serper
 
 st.set_page_config(page_title="Global Config", page_icon="⚙️", layout="wide")
+gate.require_auth()
+gate.logout_button()
 st.title("⚙️ Global Config")
 st.caption("Brand setup, Serper API key and search parameters. "
            "Non-secret settings persist across sessions; your API key stays private to your session.")
@@ -81,7 +83,7 @@ with st.form("global_config"):
         device = st.radio("Device Type *", ["desktop", "mobile"],
                           index=0 if cfg.get("device", "desktop") == "desktop" else 1)
 
-    c4, c5 = st.columns(2)
+    c4, c5, c6 = st.columns(3)
     with c4:
         num_pages = st.number_input("Number of Pages *", min_value=1, max_value=10,
                                     value=int(cfg.get("num_pages", 1)),
@@ -90,6 +92,14 @@ with st.form("global_config"):
         delay_ms = st.number_input("Delay between calls (ms)", min_value=0, max_value=5000,
                                    value=int(cfg.get("delay_ms", 200)), step=50,
                                    help="Respect Serper rate limits (PRD §6).")
+    with c6:
+        batch_size = st.number_input(
+            "Batch size", min_value=10, max_value=5000,
+            value=int(cfg.get("batch_size", 500)), step=50,
+            help="Queries per batch on the Tracking Dashboard. A checkpoint is "
+                 "saved after each batch, so an interrupted large run can resume "
+                 "without re-spending credits. Smaller = safer, more checkpoints.",
+        )
 
     submitted = st.form_submit_button("💾 Save configuration", type="primary")
 
@@ -109,6 +119,7 @@ if submitted:
             "device": device,
             "num_pages": int(num_pages),
             "delay_ms": int(delay_ms),
+            "batch_size": int(batch_size),
         })
         st.success("Configuration saved.")
         cfg = config_store.load_config()

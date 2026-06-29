@@ -7,7 +7,7 @@ from __future__ import annotations
 import streamlit as st
 from dotenv import load_dotenv
 
-from core import config_store, secrets
+from core import config_store, gate, secrets
 
 load_dotenv()
 
@@ -16,6 +16,8 @@ st.set_page_config(
     page_icon="🔍",
     layout="wide",
 )
+gate.require_auth()
+gate.logout_button()
 
 # Light RTL assist for Persian text in inputs/tables (PRD §6 RTL Support).
 st.markdown(

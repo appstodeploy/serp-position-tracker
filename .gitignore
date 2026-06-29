@@ -8,5 +8,10 @@ venv/
 data/config.json
 data/templates.json
 data/runs_history.json
+data/checkpoints/
 outputs/*.xlsx
 assets/brand_logo.*
+
+# Local Streamlit secrets (never commit)
+.streamlit/secrets.toml
+secrets.toml

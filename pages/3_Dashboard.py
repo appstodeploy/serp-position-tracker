@@ -1,15 +1,18 @@
 """Tracking Dashboard page (PRD §5.4)."""
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from core import config_store, secrets, serper, xlsx_writer
+from core import batch_runner, config_store, gate, secrets, serper, xlsx_writer
 from core.query_engine import generate_queries, read_coin_list
 
 st.set_page_config(page_title="Tracking Dashboard", page_icon="🚀", layout="wide")
+gate.require_auth()
+gate.logout_button()
 st.title("🚀 Tracking Dashboard")
 
 cfg = config_store.load_config()
@@ -83,64 +86,138 @@ if queries:
     c4.metric("Pages", cfg["num_pages"])
     st.caption("Edit these on the ⚙️ Global Config page.")
 
-    # --- Step 6: run tracking ------------------------------------------ #
+    # --- Step 6: run tracking (batched & crash-safe) ------------------- #
     st.subheader("6 · Run tracking")
-    est_calls = len(queries) * int(cfg["num_pages"])
-    st.caption(f"This will make ~{est_calls} Serper API calls "
-               f"({len(queries)} queries × {cfg['num_pages']} page(s)).")
+    total_q = len(queries)
+    batch_size = int(cfg.get("batch_size", 500) or 500)
+    n_batches = max(1, math.ceil(total_q / batch_size))
+    est_calls = total_q * int(cfg["num_pages"])
+    st.caption(
+        f"~{est_calls} Serper call(s) — {total_q} queries × {cfg['num_pages']} page(s), "
+        f"split into **{n_batches} batch(es)** of up to {batch_size}. "
+        "A checkpoint is saved after every batch, so a crash, refresh or block "
+        "never loses finished work or re-charges credits already spent. "
+        "Change the batch size on ⚙️ Global Config."
+    )
 
-    if st.button("▶️ Run Tracking", type="primary"):
-        progress = st.progress(0.0, text="Starting…")
-        status = st.empty()
+    signature = config_store.query_signature(queries)
+    resumable = config_store.find_resumable(signature)
+    active_id = st.session_state.get("active_run_id")
+    active_cp = config_store.load_checkpoint(active_id) if active_id else None
+    cp = active_cp if (active_cp and active_cp.get("signature") == signature) else resumable
+    is_resume = bool(cp and cp.get("status") != "complete" and cp.get("next_index", 0) > 0)
+
+    def _build_partial_xlsx(checkpoint: dict, suffix: str) -> Path:
+        out = config_store.OUTPUTS_DIR / f"serp_{suffix}_{checkpoint['run_id']}.xlsx"
+        xlsx_writer.build_report(
+            rows=checkpoint["rows"], config=cfg,
+            run_date=checkpoint.get("created", ""),
+            query_count=len(checkpoint["queries"]),
+            output_path=out, error_count=checkpoint["errors"],
+        )
+        return out
+
+    if is_resume:
+        done = cp["next_index"]
+        st.info(f"⏸ Resumable run **{cp['run_id']}** — {done}/{total_q} queries done, "
+                f"{len(cp['rows'])} result rows collected, {cp['errors']} error(s). "
+                "Click **Resume tracking** to continue from query "
+                f"{done + 1}; nothing already fetched is charged again.")
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            if cp["rows"]:
+                partial = _build_partial_xlsx(cp, "partial")
+                with open(partial, "rb") as fh:
+                    st.download_button(
+                        "⬇️ Download partial results", data=fh.read(),
+                        file_name=partial.name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+        with rc2:
+            if st.button("🗑 Discard & start fresh"):
+                config_store.delete_checkpoint(cp["run_id"])
+                st.session_state.pop("active_run_id", None)
+                st.rerun()
+
+    run_all = st.checkbox(
+        "Run all remaining batches now", value=True,
+        help="Uncheck to run a single batch per click — safer on flaky networks, "
+             "and lets you stop and resume between batches.",
+    )
+    max_batches = 0 if run_all else 1
+
+    label = "▶️ Resume tracking" if is_resume else "▶️ Run Tracking"
+    if st.button(label, type="primary"):
+        if not (cp and cp.get("signature") == signature and cp.get("status") != "complete"):
+            cp = batch_runner.init_run(queries, cfg)
+        st.session_state["active_run_id"] = cp["run_id"]
+
+        start_frac = cp["next_index"] / total_q if total_q else 0.0
+        progress = st.progress(start_frac, text="Starting…")
 
         def _cb(done: int, total: int, errors: int) -> None:
-            progress.progress(done / total, text=f"{done}/{total} queries — {errors} errors")
+            progress.progress(done / total, text=f"{done}/{total} queries — {errors} error(s)")
 
         try:
             with st.spinner("Querying Serper.dev…"):
-                rows, errors = serper.run_tracking(secrets.get_api_key(), queries, cfg, _cb)
+                cp = batch_runner.run(secrets.get_api_key(), cp, _cb, max_batches=max_batches)
         except serper.SerperBlockedError as exc:
             st.error(str(exc))
-            st.info("Add a Proxy on the ⚙️ Global Config page and try again.")
-            st.stop()
+            st.warning(f"Progress saved ({cp['next_index']}/{total_q} queries, "
+                       f"{len(cp['rows'])} rows). Fix the Proxy on ⚙️ Global Config, "
+                       "then click **Resume tracking** — finished queries won't be charged again.")
+            st.session_state["active_run_id"] = cp["run_id"]
+            st.rerun()
         except serper.SerperError as exc:
             st.error(str(exc))
-            st.stop()
+            st.warning(f"Progress saved ({cp['next_index']}/{total_q} queries). "
+                       "Resolve the issue, then click **Resume tracking**.")
+            st.session_state["active_run_id"] = cp["run_id"]
+            st.rerun()
 
-        progress.progress(1.0, text="Complete")
-        if errors:
-            status.warning(f"Completed with {errors} per-query error(s).")
+        if cp["status"] == "complete":
+            progress.progress(1.0, text="Complete")
+            rows = cp["rows"]
+            out_path = config_store.OUTPUTS_DIR / f"serp_report_{cp['run_id']}.xlsx"
+            xlsx_writer.build_report(
+                rows=rows, config=cfg, run_date=cp.get("created", ""),
+                query_count=len(cp["queries"]), output_path=out_path,
+                error_count=cp["errors"],
+            )
+            brand_matches = sum(1 for r in rows if r.get("Is Brand"))
+            config_store.add_history_entry({
+                "run_id": cp["run_id"],
+                "run_date": cp.get("created", ""),
+                "brand": cfg["brand_name"],
+                "query_count": len(cp["queries"]),
+                "result_rows": len(rows),
+                "brand_matches": brand_matches,
+                "errors": cp["errors"],
+                "region": cfg["region"],
+                "language": cfg["language"],
+                "device": cfg["device"],
+                "pages": cfg["num_pages"],
+                "output_path": str(out_path),
+            })
+            config_store.delete_checkpoint(cp["run_id"])  # run finished
+            st.session_state.pop("active_run_id", None)
+            st.session_state["last_report"] = str(out_path)
+            st.session_state["flash"] = (
+                f"✅ Tracking complete — {len(rows)} result rows, "
+                f"{brand_matches} brand match(es), {cp['errors']} error(s)."
+            )
         else:
-            status.success("Tracking complete.")
-
-        run_id = config_store.new_run_id()
-        run_date = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
-        out_path = config_store.OUTPUTS_DIR / f"serp_report_{run_id}.xlsx"
-        xlsx_writer.build_report(
-            rows=rows, config=cfg, run_date=run_date,
-            query_count=len(queries), output_path=out_path, error_count=errors,
-        )
-
-        brand_matches = sum(1 for r in rows if r.get("Is Brand"))
-        config_store.add_history_entry({
-            "run_id": run_id,
-            "run_date": run_date,
-            "brand": cfg["brand_name"],
-            "query_count": len(queries),
-            "result_rows": len(rows),
-            "brand_matches": brand_matches,
-            "errors": errors,
-            "region": cfg["region"],
-            "language": cfg["language"],
-            "device": cfg["device"],
-            "pages": cfg["num_pages"],
-            "output_path": str(out_path),
-        })
-
-        st.session_state["last_report"] = str(out_path)
-        st.success(f"Report saved — {len(rows)} result rows, {brand_matches} brand match(es).")
+            st.session_state["flash"] = (
+                f"⏸ Ran a batch — {cp['next_index']}/{total_q} queries done, "
+                f"{len(cp['rows'])} rows so far. Click **Resume tracking** for the next batch."
+            )
+        st.rerun()
 
 # --- Step 7: export ----------------------------------------------------- #
+flash = st.session_state.pop("flash", None)
+if flash:
+    st.success(flash)
+
 last = st.session_state.get("last_report")
 if last and Path(last).exists():
     st.subheader("7 · Export")

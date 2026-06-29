@@ -12,6 +12,7 @@ Built to the spec in [`PRD.md`](./PRD.md).
 - **Tracking Dashboard** — upload coin list → generate queries → preview → run with live progress.
 - **Reports** — run history with re-downloadable, self-contained XLSX reports.
 - Brand-position detection, per-query error isolation, rate-limit back-off, RTL-aware UI.
+- **Batched & crash-safe tracking** — large runs (thousands of queries) are split into batches; a checkpoint is saved after every batch, so a crash, refresh or geo-block never loses finished work or re-spends API credits — just click **Resume**.
 - **Private per-user API keys** — each user enters their own key; it lives only in their Streamlit session and is never written to disk or shared.
 - **Proxy support** — route Serper calls through an HTTP/SOCKS proxy when `google.serper.dev` is geo-blocked on your network (e.g. from Iran).
 
@@ -41,7 +42,7 @@ streamlit run app.py
 ## Usage
 1. **⚙️ Global Config** — enter brand name + Serper API key, set search params, save. Use *Test API key* to verify.
 2. **📋 Template Manager** — add templates such as `خرید {fa_name}`, `قیمت {en_name}`, `{symbol} price in Iran`.
-3. **🚀 Tracking Dashboard** — upload your coin list (XLSX), pick templates, generate, review config, **Run Tracking**, then download the XLSX.
+3. **🚀 Tracking Dashboard** — upload your coin list (XLSX), pick templates, generate, review config, **Run Tracking**, then download the XLSX. Big runs are processed in batches (size set on Global Config); if a run is interrupted, return to this page and click **Resume tracking** — already-fetched queries are not charged again, and you can download partial results at any time.
 4. **📊 Reports** — revisit and re-download any past run.
 
 ### Coin list format
@@ -52,6 +53,34 @@ First sheet, with at least these columns (extra columns become extra placeholder
 | بیت‌کوین | Bitcoin | BTC |
 
 A ready-made example is in [`sample_coins.xlsx`](./sample_coins.xlsx).
+
+## Privacy & access control
+Streamlit Community Cloud apps are reachable by URL, and **every page (including
+Reports) has its own URL** — so the whole app is gated, not just the home page.
+
+**Enable the password gate:**
+1. Pick a strong password.
+2. On Streamlit Cloud: **App → Settings → Secrets**, add:
+   ```toml
+   app_password = "your-strong-password"
+   ```
+   For local runs: copy `.streamlit/secrets.toml.example` → `.streamlit/secrets.toml`
+   (git-ignored), or set `APP_PASSWORD=... streamlit run app.py`.
+3. Redeploy. Visitors now hit a lock screen on **every** page; a “Log out” button
+   appears in the sidebar. If no password is set, the app shows a public-mode warning.
+
+**Other things that help privacy:**
+- **Secrets stay out of the repo** — `app_password` and any `SERPER_API_KEY` live in
+  Streamlit secrets / env, never in code. The Serper key is per-session (see above).
+- **Reports are app-only** — generated XLSX files live in the app's ephemeral
+  filesystem (git-ignored) and are reachable only through the gated UI, not as
+  public links.
+- **Don't share the app URL** publicly; treat it as a secret alongside the password.
+- For stronger control, use Streamlit's **private app** + viewer allowlist (paid),
+  put it behind **Cloudflare Access / a reverse proxy with auth**, or swap the
+  single password for per-user logins via `streamlit-authenticator`.
+- Rotate the password (and Serper key) periodically; anyone who had the old one
+  loses access on the next change.
 
 ## Report structure
 - **Summary** — run metadata + brand header/logo.
