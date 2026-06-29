@@ -12,6 +12,7 @@ Built to the spec in [`PRD.md`](./PRD.md).
 - **Tracking Dashboard** — upload coin list → generate queries → preview → run with live progress.
 - **Reports** — run history with re-downloadable, self-contained XLSX reports.
 - Brand-position detection, per-query error isolation, rate-limit back-off, RTL-aware UI.
+- **Batched & crash-safe tracking** — large runs (thousands of queries) are split into batches; a checkpoint is saved after every batch, so a crash, refresh or geo-block never loses finished work or re-spends API credits — just click **Resume**.
 - **Private per-user API keys** — each user enters their own key; it lives only in their Streamlit session and is never written to disk or shared.
 - **Proxy support** — route Serper calls through an HTTP/SOCKS proxy when `google.serper.dev` is geo-blocked on your network (e.g. from Iran).
 
@@ -41,7 +42,7 @@ streamlit run app.py
 ## Usage
 1. **⚙️ Global Config** — enter brand name + Serper API key, set search params, save. Use *Test API key* to verify.
 2. **📋 Template Manager** — add templates such as `خرید {fa_name}`, `قیمت {en_name}`, `{symbol} price in Iran`.
-3. **🚀 Tracking Dashboard** — upload your coin list (XLSX), pick templates, generate, review config, **Run Tracking**, then download the XLSX.
+3. **🚀 Tracking Dashboard** — upload your coin list (XLSX), pick templates, generate, review config, **Run Tracking**, then download the XLSX. Big runs are processed in batches (size set on Global Config); if a run is interrupted, return to this page and click **Resume tracking** — already-fetched queries are not charged again, and you can download partial results at any time.
 4. **📊 Reports** — revisit and re-download any past run.
 
 ### Coin list format
