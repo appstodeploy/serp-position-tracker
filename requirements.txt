@@ -4,3 +4,5 @@ openpyxl>=3.1
 requests>=2.32
 PySocks>=1.7          # SOCKS proxy support (socks5:// proxies)
 python-dotenv>=1.0
+gspread>=6.0          # durable result storage in Google Sheets (large-scale runs)
+google-auth>=2.0      # service-account auth for Google Sheets
