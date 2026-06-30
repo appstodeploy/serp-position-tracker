@@ -27,9 +27,12 @@ Share the Google Sheet with ``client_email`` as **Editor**.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import streamlit as st
+
+from core import config_store
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -215,3 +218,115 @@ def read_all_rows(run_id: str) -> list[dict[str, Any]]:
     ws = ss.worksheet(_results_tab(run_id))
     values = ws.get_all_values()
     return [_dict_from_row(v) for v in values[1:]]  # skip header
+
+
+# --------------------------------------------------------------------------- #
+# Durable app state — templates & config mirrored to the sheet so a Streamlit
+# reboot (which wipes the temporary disk) no longer deletes them. Stored as JSON
+# in a tiny key/value tab; restored to local disk on the next session.
+# --------------------------------------------------------------------------- #
+_STATE_TAB = "_state"
+_STATE_HEADER = ["key", "value"]
+_DURABLE_CONFIG_KEYS = (
+    "brand_name", "region", "language", "device",
+    "num_pages", "delay_ms", "proxy", "batch_size",
+)
+
+
+def _kv_set(key: str, obj: Any) -> None:
+    ss = _spreadsheet()
+    ws = _get_or_create_ws(ss, _STATE_TAB, _STATE_HEADER)
+    payload = json.dumps(obj, ensure_ascii=False)
+    col_a = ws.col_values(1)
+    if key in col_a:
+        row_idx = col_a.index(key) + 1
+        ws.update(f"A{row_idx}:B{row_idx}", [[key, payload]], value_input_option="RAW")
+    else:
+        ws.append_row([key, payload], value_input_option="RAW")
+
+
+def _kv_get(key: str, default: Any = None) -> Any:
+    try:
+        ss = _spreadsheet()
+        ws = ss.worksheet(_STATE_TAB)
+    except Exception:
+        return default
+    for row in ws.get_all_values()[1:]:  # skip header
+        if row and row[0] == key:
+            raw = row[1] if len(row) > 1 else ""
+            if not raw:
+                return default
+            try:
+                return json.loads(raw)
+            except (ValueError, TypeError):
+                return default
+    return default
+
+
+def push_templates(templates: list[dict[str, Any]]) -> None:
+    """Mirror the template bank to the sheet (call after every edit)."""
+    _kv_set("templates", templates)
+
+
+def pull_templates() -> list[dict[str, Any]] | None:
+    val = _kv_get("templates")
+    return val if isinstance(val, list) else None
+
+
+def push_config(config: dict[str, Any]) -> None:
+    """Mirror the non-secret config (brand, search params, batch size) to the sheet."""
+    _kv_set("config", {k: config.get(k) for k in _DURABLE_CONFIG_KEYS})
+
+
+def pull_config() -> dict[str, Any] | None:
+    val = _kv_get("config")
+    return val if isinstance(val, dict) else None
+
+
+def restore_state_if_empty() -> None:
+    """Repopulate templates/config from the sheet after a reboot wiped local
+    disk. Best-effort, runs at most once per session, and never blocks the page."""
+    if not is_configured() or st.session_state.get("_durable_restored"):
+        return
+    st.session_state["_durable_restored"] = True
+    try:
+        if not config_store.load_templates():
+            tpls = pull_templates()
+            if tpls:
+                config_store.save_templates(tpls)
+        cfg = config_store.load_config()
+        if not cfg.get("brand_name"):
+            saved = pull_config()
+            if saved:
+                merged = {**cfg, **{k: v for k, v in saved.items() if v not in (None, "")}}
+                config_store.save_config(merged)
+    except Exception:
+        pass  # restore is a convenience; a failure must never break the page
+
+
+def list_runs() -> list[dict[str, Any]]:
+    """All runs recorded in the progress index, oldest first."""
+    try:
+        ss = _spreadsheet()
+        ws = ss.worksheet(_RUNS_TAB)
+    except Exception:
+        return []
+    return ws.get_all_records()
+
+
+def recover_templates(run_id: str) -> list[str]:
+    """Reconstruct the distinct template texts (in original order) from a run's
+    saved result rows — used to rebuild templates lost in a reboot so the same
+    query list can be regenerated and the run resumed without re-charging."""
+    try:
+        ss = _spreadsheet()
+        ws = ss.worksheet(_results_tab(run_id))
+    except Exception:
+        return []
+    col = ws.col_values(ROW_COLUMNS.index("Template") + 1)[1:]  # skip header
+    seen: list[str] = []
+    for t in col:
+        t = (t or "").strip()
+        if t and t not in seen:
+            seen.append(t)
+    return seen

@@ -3,15 +3,26 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core import config_store, gate
+from core import config_store, gate, sheets_sink
 from core.query_engine import extract_placeholders
 
 st.set_page_config(page_title="Template Manager", page_icon="📋", layout="wide")
 gate.require_auth()
 gate.logout_button()
+# Repopulate templates from the durable sheet if a reboot wiped the disk.
+sheets_sink.restore_state_if_empty()
 st.title("📋 Template Manager")
 st.caption("Build query patterns with `{column_name}` placeholders (case-sensitive, "
            "must match your coin-list headers).")
+
+
+def _mirror_to_sheet() -> None:
+    """Keep the durable Google Sheet copy of the template bank in sync."""
+    if sheets_sink.is_configured():
+        try:
+            sheets_sink.push_templates(config_store.load_templates())
+        except Exception as exc:  # durability is best-effort
+            st.warning(f"Saved locally, but couldn't mirror templates to the sheet: {exc}")
 
 with st.expander("Examples", expanded=False):
     st.markdown(
@@ -31,10 +42,36 @@ with st.form("add_template", clear_on_submit=True):
 if add:
     try:
         config_store.add_template(new_text)
+        _mirror_to_sheet()
         st.success("Template added.")
         st.rerun()
     except ValueError as exc:
         st.error(str(exc))
+
+# --- Recover templates lost in a reboot -------------------------------- #
+if sheets_sink.is_configured():
+    unfinished = [r for r in sheets_sink.list_runs()
+                  if str(r.get("status")) not in ("complete", "discarded")]
+    if unfinished and not config_store.load_templates():
+        last = unfinished[-1]
+        st.info(
+            f"🔁 A resumable run (**{last.get('run_id')}**, "
+            f"{last.get('next_index', 0)}/{last.get('total', '?')} queries done) is in "
+            "your Google Sheet but your templates are empty (likely wiped by a reboot). "
+            "Recover them so you can regenerate the **identical** query list and resume "
+            "without re-charging finished queries."
+        )
+        if st.button("🛟 Recover templates from my sheet", type="primary"):
+            texts = sheets_sink.recover_templates(str(last.get("run_id")))
+            if not texts:
+                st.error("Couldn't read templates from the sheet's results.")
+            else:
+                for t in texts:
+                    config_store.add_template(t)
+                _mirror_to_sheet()
+                st.success(f"Recovered {len(texts)} template(s). Go to the Dashboard, "
+                           "upload the same coin file, Generate, and click Resume.")
+                st.rerun()
 
 st.divider()
 
@@ -62,6 +99,7 @@ for tpl in templates:
             if st.button("Save", key=f"save_{tpl['id']}"):
                 try:
                     config_store.update_template(tpl["id"], edited)
+                    _mirror_to_sheet()
                     st.success("Saved.")
                     st.rerun()
                 except ValueError as exc:
@@ -70,4 +108,5 @@ for tpl in templates:
             if st.button("🗑 Delete", key=f"del_{tpl['id']}", disabled=not confirm,
                          help="Tick the box to enable deletion"):
                 config_store.delete_template(tpl["id"])
+                _mirror_to_sheet()
                 st.rerun()

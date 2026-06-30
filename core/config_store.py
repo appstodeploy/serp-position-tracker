@@ -31,7 +31,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "num_pages": 1,
     "delay_ms": 200,
     "proxy": "",
-    "batch_size": 500,
+    "batch_size": 250,
 }
 
 # Keys that must never be written to the shared config file (PRD §6 Security).

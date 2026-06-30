@@ -15,6 +15,9 @@ gate.require_auth()
 gate.logout_button()
 st.title("🚀 Tracking Dashboard")
 
+# Repopulate templates/config from the durable sheet if a reboot wiped the disk.
+sheets_sink.restore_state_if_empty()
+
 cfg = config_store.load_config()
 templates = config_store.load_templates()
 
@@ -149,10 +152,14 @@ if queries:
                 st.rerun()
 
     run_all = st.checkbox(
-        "Run all remaining batches now", value=True,
-        help="Uncheck to run a single batch per click — safer on flaky networks, "
-             "and lets you stop and resume between batches.",
+        "Run all remaining batches now", value=False,
+        help="Off (recommended) runs a single batch per click — safest on "
+             "Streamlit Cloud, which reboots the app on long runs. Tick only for "
+             "small query sets to run everything in one go.",
     )
+    if run_all:
+        st.caption("⚠️ One long run can trigger a Streamlit Cloud reboot. For large "
+                   "sets, leave this off and click **Resume** once per batch.")
     max_batches = 0 if run_all else 1
 
     label = "▶️ Resume tracking" if is_resume else "▶️ Run Tracking"

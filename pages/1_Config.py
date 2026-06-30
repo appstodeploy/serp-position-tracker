@@ -8,6 +8,8 @@ from core import config_store, gate, secrets, serper, sheets_sink
 st.set_page_config(page_title="Global Config", page_icon="⚙️", layout="wide")
 gate.require_auth()
 gate.logout_button()
+# Repopulate templates/config from the durable sheet if a reboot wiped the disk.
+sheets_sink.restore_state_if_empty()
 st.title("⚙️ Global Config")
 st.caption("Brand setup, Serper API key and search parameters. "
            "Non-secret settings persist across sessions; your API key stays private to your session.")
@@ -121,8 +123,13 @@ if submitted:
             "delay_ms": int(delay_ms),
             "batch_size": int(batch_size),
         })
-        st.success("Configuration saved.")
         cfg = config_store.load_config()
+        if sheets_sink.is_configured():
+            try:
+                sheets_sink.push_config(cfg)
+            except Exception as exc:  # durability is best-effort; saving still succeeded
+                st.warning(f"Saved locally, but couldn't mirror to Google Sheet: {exc}")
+        st.success("Configuration saved.")
 
 st.divider()
 
