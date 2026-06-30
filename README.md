@@ -12,7 +12,8 @@ Built to the spec in [`PRD.md`](./PRD.md).
 - **Tracking Dashboard** — upload coin list → generate queries → preview → run with live progress.
 - **Reports** — run history with re-downloadable, self-contained XLSX reports.
 - Brand-position detection, per-query error isolation, rate-limit back-off, RTL-aware UI.
-- **Batched & crash-safe tracking** — large runs (thousands of queries) are split into batches; a checkpoint is saved after every batch, so a crash, refresh or geo-block never loses finished work or re-spends API credits — just click **Resume**.
+- **Batched & crash-safe tracking** — large runs (thousands of queries) are split into batches; progress is saved after every batch, so a crash, refresh or geo-block never loses finished work or re-spends API credits — just click **Resume**.
+- **Durable Google Sheets storage** — optional: stream results to a Google Sheet you own so runs survive even a full Streamlit Cloud reboot (which wipes the app's temporary disk). Essential for large-scale runs on the free tier.
 - **Private per-user API keys** — each user enters their own key; it lives only in their Streamlit session and is never written to disk or shared.
 - **Proxy support** — route Serper calls through an HTTP/SOCKS proxy when `google.serper.dev` is geo-blocked on your network (e.g. from Iran).
 
@@ -81,6 +82,39 @@ Reports) has its own URL** — so the whole app is gated, not just the home page
   single password for per-user logins via `streamlit-authenticator`.
 - Rotate the password (and Serper key) periodically; anyone who had the old one
   loses access on the next change.
+
+## Large-scale runs (thousands of queries) on Streamlit Cloud
+Streamlit Community Cloud gives each app an **ephemeral disk that is erased on
+every platform reboot** — and a long single run (e.g. 6000+ queries) is exactly
+what triggers a reboot. The local batch checkpoint survives a browser refresh
+but **not** a platform reboot, so for large runs enable **durable Google Sheets
+storage**:
+
+1. In Google Cloud, create a **service account**, enable the **Google Sheets
+   API** and **Drive API**, and download its **JSON key**.
+2. Create a blank **Google Sheet** and **share it as Editor** with the service
+   account's `client_email`.
+3. Add to Streamlit secrets (see `.streamlit/secrets.toml.example`):
+   ```toml
+   gsheet_id = "the-id-from-your-sheet-url"
+
+   [gcp_service_account]
+   type = "service_account"
+   private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+   client_email = "name@project.iam.gserviceaccount.com"
+   # ...rest of the JSON key fields...
+   ```
+4. Reboot the app. On **⚙️ Global Config** click **Test Google Sheets
+   connection** to verify; the **🚀 Tracking Dashboard** then shows
+   *“🟢 Durable storage ON”*.
+
+With this on, each batch's rows are appended to your sheet and dropped from
+memory (so memory stays flat and the app won't be rebooted for resource use).
+If the app *is* restarted, just re-upload the same coin list, select the same
+templates, **Generate**, and click **Resume tracking** — the app reads how far
+it got from the sheet and continues without re-charging finished queries. Also
+recommended: smaller **Batch size** (250–400) and the **one-batch-per-click**
+mode for maximum safety.
 
 ## Report structure
 - **Summary** — run metadata + brand header/logo.

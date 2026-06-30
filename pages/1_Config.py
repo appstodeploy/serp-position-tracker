@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from core import config_store, gate, secrets, serper
+from core import config_store, gate, secrets, serper, sheets_sink
 
 st.set_page_config(page_title="Global Config", page_icon="⚙️", layout="wide")
 gate.require_auth()
@@ -123,6 +123,44 @@ if submitted:
         })
         st.success("Configuration saved.")
         cfg = config_store.load_config()
+
+st.divider()
+
+# --------------------------------------------------------------------- #
+# Durable result storage (Google Sheets) — survives Streamlit reboots so
+# large runs (thousands of queries) never lose data.
+# --------------------------------------------------------------------- #
+st.subheader("🗂 Durable storage — Google Sheets")
+st.caption("For large-scale runs. Streamlit Cloud's disk is wiped on every reboot; "
+           "connecting a Google Sheet streams results to storage you own that can't be lost.")
+if sheets_sink.is_configured():
+    st.caption("Status: ✅ configured.")
+    if st.button("🔌 Test Google Sheets connection"):
+        ok, message = sheets_sink.check_access()
+        (st.success if ok else st.error)(message)
+        if ok:
+            st.markdown(f"[Open your results sheet]({sheets_sink.sheet_url()})")
+else:
+    st.caption("Status: ⚠️ not configured — large runs use the temporary disk and can be "
+               "lost on reboot.")
+    with st.expander("How to enable (one-time setup)"):
+        st.markdown(
+            "1. Create a Google **service account** in Google Cloud, enable the **Google "
+            "Sheets API** + **Drive API**, and download its **JSON key**.\n"
+            "2. Create a blank **Google Sheet** and **share it as Editor** with the service "
+            "account's `client_email`.\n"
+            "3. In **App → Settings → Secrets** (or local `.streamlit/secrets.toml`) add:\n"
+            "```toml\n"
+            "gsheet_id = \"<the id from your sheet URL>\"\n\n"
+            "[gcp_service_account]\n"
+            "type = \"service_account\"\n"
+            "project_id = \"...\"\n"
+            "private_key = \"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n\"\n"
+            "client_email = \"name@project.iam.gserviceaccount.com\"\n"
+            "# ...the rest of the JSON key fields...\n"
+            "```\n"
+            "4. Reboot the app, then click **Test Google Sheets connection**."
+        )
 
 st.divider()
 if st.button("🔌 Test API key"):

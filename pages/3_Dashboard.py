@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-from core import batch_runner, config_store, gate, secrets, serper, xlsx_writer
+from core import batch_runner, config_store, gate, secrets, serper, sheets_sink, xlsx_writer
 from core.query_engine import generate_queries, read_coin_list
 
 st.set_page_config(page_title="Tracking Dashboard", page_icon="🚀", layout="wide")
@@ -86,7 +86,7 @@ if queries:
     c4.metric("Pages", cfg["num_pages"])
     st.caption("Edit these on the ⚙️ Global Config page.")
 
-    # --- Step 6: run tracking (batched & crash-safe) ------------------- #
+    # --- Step 6: run tracking (batched, durable & crash-safe) ---------- #
     st.subheader("6 · Run tracking")
     total_q = len(queries)
     batch_size = int(cfg.get("batch_size", 500) or 500)
@@ -94,48 +94,57 @@ if queries:
     est_calls = total_q * int(cfg["num_pages"])
     st.caption(
         f"~{est_calls} Serper call(s) — {total_q} queries × {cfg['num_pages']} page(s), "
-        f"split into **{n_batches} batch(es)** of up to {batch_size}. "
-        "A checkpoint is saved after every batch, so a crash, refresh or block "
-        "never loses finished work or re-charges credits already spent. "
-        "Change the batch size on ⚙️ Global Config."
+        f"split into **{n_batches} batch(es)** of up to {batch_size}. Progress is saved "
+        "after every batch, so a crash, refresh or block never loses finished work or "
+        "re-charges credits already spent. Change the batch size on ⚙️ Global Config."
     )
 
-    signature = config_store.query_signature(queries)
-    resumable = config_store.find_resumable(signature)
-    active_id = st.session_state.get("active_run_id")
-    active_cp = config_store.load_checkpoint(active_id) if active_id else None
-    cp = active_cp if (active_cp and active_cp.get("signature") == signature) else resumable
-    is_resume = bool(cp and cp.get("status") != "complete" and cp.get("next_index", 0) > 0)
-
-    def _build_partial_xlsx(checkpoint: dict, suffix: str) -> Path:
-        out = config_store.OUTPUTS_DIR / f"serp_{suffix}_{checkpoint['run_id']}.xlsx"
-        xlsx_writer.build_report(
-            rows=checkpoint["rows"], config=cfg,
-            run_date=checkpoint.get("created", ""),
-            query_count=len(checkpoint["queries"]),
-            output_path=out, error_count=checkpoint["errors"],
+    sink = sheets_sink if sheets_sink.is_configured() else None
+    if sink:
+        st.success("🟢 **Durable storage ON** — results stream live to your Google Sheet "
+                   "and survive any Streamlit reboot.  ["
+                   f"open the sheet]({sheets_sink.sheet_url()})")
+    else:
+        st.warning(
+            "🟡 **Durable storage OFF** — results are kept only on the app's temporary "
+            "disk and **will be lost if Streamlit Cloud reboots** (it does so on long runs). "
+            "For large runs, configure Google Sheets in Streamlit secrets — see the README. "
+            "Local checkpoints still protect against a browser refresh.",
+            icon="⚠️",
         )
-        return out
+
+    signature = config_store.query_signature(queries)
+    existing = sheets_sink.find_run(signature) if sink else config_store.find_resumable(signature)
+    is_resume = bool(existing and existing.get("status") not in ("complete", "discarded")
+                     and existing.get("next_index", 0) > 0)
 
     if is_resume:
-        done = cp["next_index"]
-        st.info(f"⏸ Resumable run **{cp['run_id']}** — {done}/{total_q} queries done, "
-                f"{len(cp['rows'])} result rows collected, {cp['errors']} error(s). "
-                "Click **Resume tracking** to continue from query "
-                f"{done + 1}; nothing already fetched is charged again.")
+        done = existing["next_index"]
+        st.info(f"⏸ Resumable run **{existing['run_id']}** — {done}/{total_q} queries done, "
+                f"{existing.get('errors', 0)} error(s). Click **Resume tracking** to continue "
+                f"from query {done + 1}; nothing already fetched is charged again.")
         rc1, rc2 = st.columns(2)
         with rc1:
-            if cp["rows"]:
-                partial = _build_partial_xlsx(cp, "partial")
+            if sink:
+                st.markdown(f"[⬇️ View / download results so far]({sheets_sink.sheet_url()})")
+            elif existing.get("rows"):
+                partial = config_store.OUTPUTS_DIR / f"serp_partial_{existing['run_id']}.xlsx"
+                xlsx_writer.build_report(
+                    rows=existing["rows"], config=cfg, run_date=existing.get("created", ""),
+                    query_count=len(existing["queries"]), output_path=partial,
+                    error_count=existing["errors"],
+                )
                 with open(partial, "rb") as fh:
                     st.download_button(
-                        "⬇️ Download partial results", data=fh.read(),
-                        file_name=partial.name,
+                        "⬇️ Download partial results", data=fh.read(), file_name=partial.name,
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     )
         with rc2:
             if st.button("🗑 Discard & start fresh"):
-                config_store.delete_checkpoint(cp["run_id"])
+                if sink:
+                    sheets_sink.discard_run(existing["run_id"])
+                else:
+                    config_store.delete_checkpoint(existing["run_id"])
                 st.session_state.pop("active_run_id", None)
                 st.rerun()
 
@@ -148,24 +157,30 @@ if queries:
 
     label = "▶️ Resume tracking" if is_resume else "▶️ Run Tracking"
     if st.button(label, type="primary"):
-        if not (cp and cp.get("signature") == signature and cp.get("status") != "complete"):
+        if is_resume and sink:
+            cp = batch_runner.resume_run(queries, cfg, existing)
+        elif is_resume:
+            cp = existing  # local checkpoint already carries collected rows
+        else:
             cp = batch_runner.init_run(queries, cfg)
+        if sink:
+            sheets_sink.start_run(cp)
         st.session_state["active_run_id"] = cp["run_id"]
 
-        start_frac = cp["next_index"] / total_q if total_q else 0.0
-        progress = st.progress(start_frac, text="Starting…")
+        progress = st.progress(cp["next_index"] / total_q if total_q else 0.0, text="Starting…")
 
         def _cb(done: int, total: int, errors: int) -> None:
             progress.progress(done / total, text=f"{done}/{total} queries — {errors} error(s)")
 
         try:
             with st.spinner("Querying Serper.dev…"):
-                cp = batch_runner.run(secrets.get_api_key(), cp, _cb, max_batches=max_batches)
+                cp = batch_runner.run(secrets.get_api_key(), cp, sink=sink,
+                                      progress_cb=_cb, max_batches=max_batches)
         except serper.SerperBlockedError as exc:
             st.error(str(exc))
-            st.warning(f"Progress saved ({cp['next_index']}/{total_q} queries, "
-                       f"{len(cp['rows'])} rows). Fix the Proxy on ⚙️ Global Config, "
-                       "then click **Resume tracking** — finished queries won't be charged again.")
+            st.warning(f"Progress saved ({cp['next_index']}/{total_q} queries). Fix the Proxy "
+                       "on ⚙️ Global Config, then click **Resume tracking** — finished queries "
+                       "won't be charged again.")
             st.session_state["active_run_id"] = cp["run_id"]
             st.rerun()
         except serper.SerperError as exc:
@@ -174,32 +189,31 @@ if queries:
                        "Resolve the issue, then click **Resume tracking**.")
             st.session_state["active_run_id"] = cp["run_id"]
             st.rerun()
+        except Exception as exc:  # e.g. a Google Sheets / storage hiccup
+            st.error(f"Run interrupted: {type(exc).__name__}: {exc}")
+            st.warning(f"Progress saved ({cp['next_index']}/{total_q} queries). "
+                       "Fix the issue, then click **Resume tracking**.")
+            st.session_state["active_run_id"] = cp["run_id"]
+            st.rerun()
 
         if cp["status"] == "complete":
             progress.progress(1.0, text="Complete")
-            rows = cp["rows"]
+            rows = sheets_sink.read_all_rows(cp["run_id"]) if sink else cp["rows"]
             out_path = config_store.OUTPUTS_DIR / f"serp_report_{cp['run_id']}.xlsx"
             xlsx_writer.build_report(
                 rows=rows, config=cfg, run_date=cp.get("created", ""),
-                query_count=len(cp["queries"]), output_path=out_path,
-                error_count=cp["errors"],
+                query_count=len(cp["queries"]), output_path=out_path, error_count=cp["errors"],
             )
             brand_matches = sum(1 for r in rows if r.get("Is Brand"))
             config_store.add_history_entry({
-                "run_id": cp["run_id"],
-                "run_date": cp.get("created", ""),
-                "brand": cfg["brand_name"],
-                "query_count": len(cp["queries"]),
-                "result_rows": len(rows),
-                "brand_matches": brand_matches,
-                "errors": cp["errors"],
-                "region": cfg["region"],
-                "language": cfg["language"],
-                "device": cfg["device"],
-                "pages": cfg["num_pages"],
-                "output_path": str(out_path),
+                "run_id": cp["run_id"], "run_date": cp.get("created", ""),
+                "brand": cfg["brand_name"], "query_count": len(cp["queries"]),
+                "result_rows": len(rows), "brand_matches": brand_matches,
+                "errors": cp["errors"], "region": cfg["region"], "language": cfg["language"],
+                "device": cfg["device"], "pages": cfg["num_pages"], "output_path": str(out_path),
             })
-            config_store.delete_checkpoint(cp["run_id"])  # run finished
+            if not sink:
+                config_store.delete_checkpoint(cp["run_id"])
             st.session_state.pop("active_run_id", None)
             st.session_state["last_report"] = str(out_path)
             st.session_state["flash"] = (
@@ -207,9 +221,10 @@ if queries:
                 f"{brand_matches} brand match(es), {cp['errors']} error(s)."
             )
         else:
+            where = "saved to your Google Sheet" if sink else "saved locally"
             st.session_state["flash"] = (
-                f"⏸ Ran a batch — {cp['next_index']}/{total_q} queries done, "
-                f"{len(cp['rows'])} rows so far. Click **Resume tracking** for the next batch."
+                f"⏸ Ran a batch — {cp['next_index']}/{total_q} queries done ({where}). "
+                "Click **Resume tracking** for the next batch."
             )
         st.rerun()
 
